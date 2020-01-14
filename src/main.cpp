@@ -128,7 +128,6 @@ int main(int argc, char *argv[]) {
     }
 
     auto files = directory_iterator(input);
-    stbi_set_flip_vertically_on_load(true);
     std::for_each(std::execution::par, std::filesystem::begin(files), std::filesystem::end(files), process_file);
 
     return 0;

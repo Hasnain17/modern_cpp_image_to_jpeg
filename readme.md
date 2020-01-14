@@ -4,33 +4,41 @@ This project shows off a few of the new core language additions as well as std e
 and is a tool to auto-convert all recognised image files in a given directory or on a web-page to jpg files.
 
 Implemented are a C++17 version of the toojpeg library (~600 LOC), an http 'socket' (~600 LOC), a webpage-crawler (~100 LOC).
+Find benchmark results at the end of this document.
 
-Used external libraries and header-only libraries: openSSL for https and `stb_image.h` for loading images.
+## Build
 
-A benchmark binary downloads and loads a 2d-projected picture of the earth
-(https://upload.wikimedia.org/wikipedia/commons/3/3d/Eckert4.jpg, 1.6MB, Creative Commons License)
-and writes it with the original and re-implemented toojpeg library. Find benchmark results at the end of this document.  
+The buildsystem is based on [CMake](https://cmake.org/download/) (>3.1), no further dependencies are required.
+openSSL is optional and if found, allows for https URLs to be crawled for images.
 
-## Documentation
-
-The code is Doxygen-compatible documented. Build the documentation via `cmake` and `make doc`.
-A prebuild documentation is checked-in at `doc/html`.
-
-## Tests
-
-Tests are stored in the `tests/` directory. Build them with `cmake` and `make tests`.
-A small C++17 featured test harness has been written in tests/tests.h to avoid external dependencies.
+Build with: `mkdir build && cd build && cmake ../ && make` on Unix systems.
 
 ## Run
 
 To load and convert png, gif, jpg, bmp files in a directory, add the input directory as first argument
 and the output directory optionally as second argument:
 
-```sh
+```shell script
 ./image_to_jpeg ./dir_with_images ./out
 ```
 
-The first argument can also be a 
+If input and output directory are the same, all jpeg encoded files will be stored with a `.new.jpg` extension.
+
+The first argument can also be a URL. The page will be downloaded and all images referenced within an `<img src="..">` tag
+will be downloaded and jpeg encoded. The default quality is 90.
+
+```shell script
+./image_to_jpeg https://en.wikipedia.org/wiki/Wikipedia:Manual_of_Style/Images ./out
+```
+## Tests
+
+Tests are stored in the `tests/` directory. Build them with `cmake` and `make tests`.
+A small C++17 featured test harness has been written in tests/tests.h to avoid external dependencies.
+
+## Documentation
+
+The code is documented Doxygen-compatible. Build the documentation via `cmake` and `make doc`.
+A prebuild documentation is checked-in at `doc/html`.
 
 ## C-legacy
 
@@ -40,9 +48,9 @@ This includes old-style casts, C-Posix API (except the net Socket API) and the C
 For example:
 * `std::array<uint8_t,8*8>` instead of `uint8_t data[8*8]`
 * `std::experimental::source_location` instead of `__LINE__`, `__FILE` etc
-* `constexpr` instead of macros and for conditional compilations
+* `constexpr` instead of macros and `if constexpr ()` for conditional compilations
 
-C-Libraries like the stb_image library have been properly C++ type wrapped to take advantage of RAII etc.
+C-Libraries like the stb_image library have been properly C++ type wrapped (see `src/image_loader.h`) to take advantage of RAII etc.
 
 ## C++17 version of the toojpeg library
 
@@ -192,40 +200,81 @@ if constexpr (with_https) {
 The filesystem submodule is a massive addition to C++17 and The Standard Library.
 
 This project uses `std::filesystem` for simple operations like retrieving the current path, removing a file, checking
-if a file exists, and for more elaborated tasks like enumerating all files, not directories, of a certain directory.  
+if a file exists, and for more elaborated tasks like enumerating all files, not directories, of a certain directory.
+Even that is just a few lines of code:
+```c++
+using namespace std::filesystem;
+const path input(argv[1]);
+auto files = directory_iterator(input);
+std::for_each(std::execution::par, std::filesystem::begin(files), std::filesystem::end(files), process_file);
+```
 
 The c++11 `std::regex` (and implicitly the C++17 `std::basic_regex` deduction guide) has been used for
-the webpage image url crawler, found in `main.cpp::webpage_crawler`.
+the webpage image url crawler, found in `main.cpp::webpage_crawler`. `std::regex` is part of C++11 already,
+but gained a few more convenience methods. The basic usage pattern in this project is:
+
+```c++
+std::string page = "...";
+static std::regex url_regex(R"(.*src=["']([^"']*?(?:jpg|png|bmp|gif|pnm|JPG|PNG|BMP|GIF|PNM))["'].*)");
+std::match_results<std::string::const_iterator> match;
+
+while (std::regex_search(page, match, url_regex)) {
+    auto image_url = Socket::Url::from_relative(url, match[1].str());
+    page = match.suffix();
+}
+```
 
 The parallel algorithm support of C++17's std has been used to read, compute and output multiple files in parallel:
 ```c++
-std::for_each(std::execution::par, std::begin(files), std::end(files), [&](Path& path) {
-  process_file(path, output_dir);
-});
+#include <algorithm>
+#include <execution>
+std::for_each(std::execution::par, std::filesystem::begin(files), std::filesystem::end(files), process_file);
 ```
+
+As this is not a memory bound operation, but mostly an IO one, this speeds up file processing.
+
+`std::execution::par` is one of four (three in C++17) specified strategies and does not give guarantees in respect to the sequence
+("invocations executing in the same thread are indeterminately sequenced") or the execution threads
+("...are permitted to execute in either the invoking thread or in a thread implicitly created by the library").
 
 ## Benchmark
 
+A benchmark binary downloads and loads a 2d-projected picture of the earth
+(https://upload.wikimedia.org/wikipedia/commons/3/3d/Eckert4.jpg, 1.6MB, Creative Commons License)
+and writes it with the original and re-implemented toojpeg library. 
+
 Build the benchmark (found in `src/benchmark/main.cpp) via `cmake` and `make benchmark`.
 Run it with `./benchmark` in the build directory. Each routine is run 20 times and the time is summed up.
+No warm up happens, but invoking the benchmark multiple times shows similar numbers on my Core i7 8th Gen.
 
 ```
 Original TooJpeg : 201 ms. Bytes: 275324
 TooJpeg17 : 247 ms. Bytes: 275365
 ```
 
-Writen byte counts are different because the jpeg comment differs.
-(The test suite makes sure that changes to the code result in a failing integration test.)
+The output byte counts are different because the jpeg comment differs.
+(The test suite makes sure that breaking changes to the code result in failing integration tests.)
+No data is actually written to disk.
 
-I have expected a performance gain, by pre-computing the lookup tables.
+I have expected a performance gain, by pre-computing the lookup tables and got caught surprised by the number.
 
 Using `std::array` comes with its own implications like an implicit full copy-by-value,
-in contrast to a pointer for a C-Array. This results in much more copy operations
-which can be observed in a runtime penalty. To mitigate this, some std::arrays
-could be flat c-array pointers again.
+when passed by value in contrast to a C-Array. This results in much more copy operations
+and function arguments cannot be simply passed in CPU registers but require the stack.
+This can be observed in the given runtime penalty. To mitigate this, some argument-by-value's have
+to be references/pointers instead.
 
 A small benchmark suite, integrated into CI, helps to find negative impacting changes.
 I have failed to set that up more early in the process.
+
+## Acknowledgements
+
+Used external libraries and header-only libraries:
+
+* openSSL for https (optional)
+* [`stb_image.h`](https://github.com/nothings/stb) for loading images (in src/vendor/sb_image.h).
+* [PicoSHA2](https://github.com/okdshin/PicoSHA2) for the integration tests (in src/vendor/sha2.h).
+* [TooJpeg](https://create.stephan-brumme.com/toojpeg/) the original jpeg encoding library (code can also be found in src/benchmark/toojpeg.*).
 
 ---
 
